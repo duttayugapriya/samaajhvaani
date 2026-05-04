@@ -1,0 +1,10 @@
+streamlit>=1.33.0
+SpeechRecognition==3.10.0
+gTTS==2.3.2
+folium
+streamlit-folium
+pandas
+transformers
+torch
+googletrans==4.0.0-rc1
+openai-whisper
