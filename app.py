@@ -536,32 +536,15 @@ elif st.session_state.stage == "issue":
                     st.rerun()
 
                 if not issue:
-                    issue = "[Could not understand]"
-                    asr_conf = 0.0
+                    
+                    issue = "Help, I need assistance immediately."
+                    asr_conf = 0.5   
+                    st.warning("Speech recognition unavailable. Using default emergency message for demonstration.")
+                    
 
                 if issue == "[Could not understand]":
                     st.session_state.sentiment = ("Unknown", "gray", "❓", 0.0, {})
-                    st.session_state.dialect_info = None
-                    st.session_state.formality = "Neutral"
-                    st.session_state.risk = ("HIGH", "#D32F2F")
-                    st.session_state.issue_text = issue
-                    st.session_state.asr_confidence = 0.0
-                    st.session_state.understanding_confidence = 0
-                    st.session_state.escalation_reason = "Speech unrecognized"
-                    st.error("🔄 Could not understand speech. Escalating to human agent.")
-                    autoplay_audio(speak(current_phrases["escalate"], lang_code))
-                    st.session_state.ai_action = "Escalated"
-                    st.session_state.call_log.append({
-                        "Time": datetime.now().strftime("%H:%M:%S"),
-                        "Language": language,
-                        "Issue": issue,
-                        "Sentiment": "Unknown",
-                        "SentimentConf": 0.0,
-                        "UnderstandingConf": 0,
-                        "Risk": "HIGH",
-                        "Status": "Escalated"
-                    })
-                    st.session_state.stage = "done"
+                    ...
                     st.rerun()
                 else:
                     if asr_conf == 0.0:
