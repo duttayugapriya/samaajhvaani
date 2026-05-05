@@ -1,6 +1,4 @@
 import streamlit as st
-import speech_recognition as sr
-from gtts import gTTS
 import base64
 import io
 import folium
@@ -10,6 +8,13 @@ from datetime import datetime
 from transformers import pipeline
 from googletrans import Translator
 import json
+import time
+
+try:
+    import speech_recognition as sr
+    _google_speech_available = True
+except ModuleNotFoundError:
+    _google_speech_available = False
 
 @st.cache_resource
 def load_sentiment_pipeline():
@@ -17,6 +22,15 @@ def load_sentiment_pipeline():
         return pipeline("text-classification", model="j-hartmann/emotion-english-distilroberta-base", top_k=None)
     except:
         st.warning("Hugging Face model not available, using keyword fallback.")
+        return None
+
+@st.cache_resource
+def load_whisper():
+    try:
+        import whisper
+        return whisper.load_model("small")
+    except Exception as e:
+        st.error("Whisper could not be loaded. Using Google Speech.")
         return None
 
 sentiment_pipe = load_sentiment_pipeline()
@@ -257,15 +271,6 @@ def risk_level(sentiment_name, text=""):
     else:
         return "LOW","#388E3C"
 
-@st.cache_resource
-def load_whisper():
-    try:
-        import whisper
-        return whisper.load_model("small")
-    except Exception as e:
-        st.error("Whisper could not be loaded. Using Google Speech.")
-        return None
-
 def transcribe_with_whisper(audio_path, lang_code):
     model = load_whisper()
     if model is None:
@@ -494,10 +499,12 @@ elif st.session_state.stage == "issue":
                     f.write(audio_bytes)
                 asr_conf = 0.0
                 issue = None
-                if actual_engine == "whisper":
+
+                if actual_engine == "whisper" or not _google_speech_available:
                     with st.spinner("Transcribing with Whisper..."):
                         issue, asr_conf = transcribe_with_whisper("issue.wav", lang_code[language])
-                if not issue:
+
+                if not issue and _google_speech_available:
                     rec = sr.Recognizer()
                     with sr.AudioFile("issue.wav") as src:
                         adata = rec.record(src)
@@ -508,6 +515,7 @@ elif st.session_state.stage == "issue":
                             asr_conf = response['alternative'][0].get('confidence', 0.0)
                     except:
                         pass
+
                 if not issue:
                     issue = "[Could not understand]"
                     asr_conf = 0.0
@@ -622,13 +630,21 @@ elif st.session_state.stage == "confirm":
             if confirm_bytes and len(confirm_bytes) > 0:
                 with open("confirm.wav","wb") as f:
                     f.write(confirm_bytes)
-                rec = sr.Recognizer()
-                with sr.AudioFile("confirm.wav") as src:
-                    adata = rec.record(src)
-                try:
-                    answer = rec.recognize_google(adata, language=f"{lang_code}-IN")
-                except:
-                    answer = ""
+
+                answer = ""
+                if not _google_speech_available:
+                    ans_text, _ = transcribe_with_whisper("confirm.wav", lang_code[language])
+                    if ans_text:
+                        answer = ans_text
+                else:
+                    try:
+                        rec = sr.Recognizer()
+                        with sr.AudioFile("confirm.wav") as src:
+                            adata = rec.record(src)
+                        answer = rec.recognize_google(adata, language=f"{lang_code}-IN")
+                    except:
+                        answer = ""
+
                 st.write(f"**📝 You answered:** {answer}")
 
                 yes_words = {"English": ["yes","yeah","yep","correct","right"],
