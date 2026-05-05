@@ -6,7 +6,7 @@ from streamlit_folium import st_folium
 import pandas as pd
 from datetime import datetime
 from transformers import pipeline
-from googletrans import Translator
+from deep_translator import GoogleTranslator
 from gtts import gTTS
 import json
 import time
@@ -35,7 +35,6 @@ def load_whisper():
         return None
 
 sentiment_pipe = load_sentiment_pipeline()
-translator = Translator()
 
 st.set_page_config(page_title="SamaajhVaani", layout="wide")
 
@@ -160,8 +159,8 @@ def detect_sentiment(text, lang):
         text_to_analyze = text
     else:
         try:
-            translation = translator.translate(text, dest='en')
-            text_to_analyze = translation.text
+            translated = GoogleTranslator(source='auto', target='en').translate(text)
+            text_to_analyze = translated
         except:
             return detect_sentiment_keywords(text, lang)
 
