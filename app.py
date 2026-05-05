@@ -7,6 +7,7 @@ import pandas as pd
 from datetime import datetime
 from transformers import pipeline
 from googletrans import Translator
+from gtts import gTTS
 import json
 import time
 
@@ -49,8 +50,15 @@ st.markdown("""
 st.title("SamaajhVaani – 1092 AI Assistant")
 st.caption("Verified Understanding Before Action")
 
-language = st.selectbox("🌐 Language", ["English", "Kannada", "Hindi"], key="lang")
-lang_code = {"English": "en", "Kannada": "kn", "Hindi": "hi"}[language]
+language_options = ["English", "Kannada", "Hindi", "Auto-detect"]
+language = st.selectbox("🌐 Language", language_options, key="lang")
+if "detected_language" not in st.session_state:
+    st.session_state.detected_language = None
+if language == "Auto-detect" and st.session_state.detected_language is not None:
+    language = st.session_state.detected_language
+    st.session_state.detected_language = None
+
+lang_code = {"English": "en", "Kannada": "kn", "Hindi": "hi"}.get(language, "en")
 
 asr_engine = st.selectbox("🎛️ ASR Engine", ["Google Web Speech (fast)", "Whisper (offline, accurate)"])
 if asr_engine == "Whisper (offline, accurate)":
@@ -271,15 +279,17 @@ def risk_level(sentiment_name, text=""):
     else:
         return "LOW","#388E3C"
 
-def transcribe_with_whisper(audio_path, lang_code):
+def transcribe_with_whisper(audio_path, lang_code_hint):
     model = load_whisper()
     if model is None:
-        return None, 0.0
+        return None, 0.0, None
     try:
-        result = model.transcribe(audio_path, language=lang_code[:2], fp16=False)
-        return result["text"], 0.9
+        lang_arg = None if lang_code_hint == "auto" else lang_code_hint[:2]
+        result = model.transcribe(audio_path, language=lang_arg, fp16=False)
+        detected_lang = result.get("language", "en")
+        return result["text"], 0.9, detected_lang
     except Exception:
-        return None, 0.0
+        return None, 0.0, None
 
 if "stage" not in st.session_state:
     st.session_state.stage = "idle"
@@ -317,6 +327,8 @@ if "escalation_reason" not in st.session_state:
 demo_on = st.sidebar.checkbox("🎭 Demo Mode (automated showcase)", value=False)
 view = st.sidebar.radio("View", ["Agent View", "Analytics"], horizontal=True)
 
+current_phrases = phrases.get(language, phrases["English"])
+
 if view == "Agent View":
     with st.sidebar:
         st.header("🖥️ Agent Dashboard")
@@ -327,14 +339,6 @@ if view == "Agent View":
 
             sent_label, sent_color, sent_emoji, sent_conf, sent_scores = st.session_state.sentiment
             st.markdown(f"**Sentiment:** {sent_emoji} <span style='color:{sent_color}; font-weight:bold'>{sent_label}</span>", unsafe_allow_html=True)
-            st.progress(sent_conf, text=f"Sentiment Confidence: {sent_conf:.0%}")
-            if sent_scores:
-                sorted_emo = sorted(sent_scores.items(), key=lambda x: x[1], reverse=True)[:3]
-                chart_data = pd.DataFrame({"emotion": [e[0] for e in sorted_emo], "score": [e[1] for e in sorted_emo]})
-                st.bar_chart(chart_data.set_index("emotion"), height=100)
-
-            st.markdown(f"**🤖 Overall Understanding Confidence:**")
-            st.progress(st.session_state.understanding_confidence / 100, text=f"{st.session_state.understanding_confidence}%")
 
             if st.session_state.dialect_info:
                 st.info(f"🗣️ {st.session_state.dialect_info}")
@@ -400,6 +404,12 @@ elif view == "Analytics":
             col1.metric("Total Calls", len(df))
             col2.metric("Avg Risk HIGH", f"{(df['Risk']=='HIGH').mean():.0%}")
             col3.metric("Escalation Rate", f"{(df['Status']=='Escalated').mean():.0%}")
+            if 'SentimentConf' in df.columns and 'UnderstandingConf' in df.columns:
+                col4, col5 = st.columns(2)
+                avg_sent_conf = df['SentimentConf'].mean()
+                avg_under_conf = df['UnderstandingConf'].mean()
+                col4.metric("Avg Sentiment Confidence", f"{avg_sent_conf:.0%}")
+                col5.metric("Avg Understanding Confidence", f"{avg_under_conf:.0%}")
             st.subheader("Sentiment Distribution")
             sentiment_counts = df['Sentiment'].value_counts()
             st.bar_chart(sentiment_counts)
@@ -446,13 +456,13 @@ if st.session_state.stage == "idle":
 
 elif st.session_state.stage == "issue":
     if not st.session_state.greeting_audio_played:
-        autoplay_audio(speak(phrases[language]["greeting"], lang_code))
+        autoplay_audio(speak(current_phrases["greeting"], lang_code))
         st.session_state.greeting_audio_played = True
         if demo_on:
             st.markdown("#### 🎙️ Greeting playing... (demo mode will auto-fill)")
             import time
             time.sleep(4)
-            issue = sim_issues[language]
+            issue = sim_issues.get(language, sim_issues["English"])
             sent_label, sent_color, sent_emoji, sent_conf, sent_scores = detect_sentiment(issue, language)
             dialect = detect_dialect(issue, language)
             formality = detect_formality(issue, language)
@@ -472,13 +482,15 @@ elif st.session_state.stage == "issue":
                 reason = "High risk" if risk_text == "HIGH" else "Low understanding confidence"
                 st.session_state.escalation_reason = reason
                 st.error(f"🔄 {reason}. Escalating to human agent immediately.")
-                autoplay_audio(speak(phrases[language]["escalate"], lang_code))
+                autoplay_audio(speak(current_phrases["escalate"], lang_code))
                 st.session_state.ai_action = "Escalated"
                 st.session_state.call_log.append({
                     "Time": datetime.now().strftime("%H:%M:%S"),
                     "Language": language,
                     "Issue": st.session_state.issue_text[:50]+"...",
                     "Sentiment": st.session_state.sentiment[0],
+                    "SentimentConf": st.session_state.sentiment[3],
+                    "UnderstandingConf": st.session_state.understanding_confidence,
                     "Risk": st.session_state.risk[0],
                     "Status": "Escalated"
                 })
@@ -499,12 +511,14 @@ elif st.session_state.stage == "issue":
                     f.write(audio_bytes)
                 asr_conf = 0.0
                 issue = None
+                detected_lang = None
 
-                if actual_engine == "whisper" or not _google_speech_available:
+                lang_arg = lang_code if language != "Auto-detect" else "auto"
+                if actual_engine == "whisper" or not _google_speech_available or language == "Auto-detect":
                     with st.spinner("Transcribing with Whisper..."):
-                        issue, asr_conf = transcribe_with_whisper("issue.wav", lang_code[language])
+                        issue, asr_conf, detected_lang = transcribe_with_whisper("issue.wav", lang_arg)
 
-                if not issue and _google_speech_available:
+                if not issue and _google_speech_available and language != "Auto-detect":
                     rec = sr.Recognizer()
                     with sr.AudioFile("issue.wav") as src:
                         adata = rec.record(src)
@@ -516,51 +530,85 @@ elif st.session_state.stage == "issue":
                     except:
                         pass
 
+                if language == "Auto-detect" and issue and detected_lang:
+                    mapping = {"en": "English", "kn": "Kannada", "hi": "Hindi"}
+                    new_lang = mapping.get(detected_lang, "English")
+                    st.session_state.detected_language = new_lang
+                    st.rerun()
+
                 if not issue:
                     issue = "[Could not understand]"
                     asr_conf = 0.0
-                if asr_conf == 0.0:
-                    asr_conf = 0.7
-                sent_label, sent_color, sent_emoji, sent_conf, sent_scores = detect_sentiment(issue, language)
-                dialect = detect_dialect(issue, language)
-                formality = detect_formality(issue, language)
-                risk_text, risk_color = risk_level(sent_label, issue)
-                st.session_state.sentiment = (sent_label, sent_color, sent_emoji, sent_conf, sent_scores)
-                st.session_state.dialect_info = dialect
-                st.session_state.formality = formality
-                st.session_state.risk = (risk_text, risk_color)
-                st.session_state.issue_text = issue
-                st.session_state.asr_confidence = asr_conf
-                st.session_state.understanding_confidence = round((0.6 * asr_conf + 0.4 * sent_conf) * 100)
-                st.markdown(f"**📝 Transcribed:** {issue}")
-                st.markdown(f"**Sentiment:** {sent_emoji} <span style='color:{sent_color}'>{sent_label}</span>", unsafe_allow_html=True)
-                if dialect:
-                    st.info(dialect)
-                st.caption(f"🗣️ Tone: {formality}")
 
-                if st.session_state.feedback_log and not st.session_state.feedback_log[-1]['verified'] and not st.session_state.feedback_log[-1]['corrected']:
-                    st.session_state.feedback_log[-1]['corrected'] = issue
-
-                if risk_text == "HIGH" or st.session_state.understanding_confidence < 40:
-                    reason = "High risk" if risk_text == "HIGH" else "Low understanding confidence"
-                    st.session_state.escalation_reason = reason
-                    st.error(f"🔄 {reason}. Escalating to human agent immediately.")
-                    autoplay_audio(speak(phrases[language]["escalate"], lang_code))
+                if issue == "[Could not understand]":
+                    st.session_state.sentiment = ("Unknown", "gray", "❓", 0.0, {})
+                    st.session_state.dialect_info = None
+                    st.session_state.formality = "Neutral"
+                    st.session_state.risk = ("HIGH", "#D32F2F")
+                    st.session_state.issue_text = issue
+                    st.session_state.asr_confidence = 0.0
+                    st.session_state.understanding_confidence = 0
+                    st.session_state.escalation_reason = "Speech unrecognized"
+                    st.error("🔄 Could not understand speech. Escalating to human agent.")
+                    autoplay_audio(speak(current_phrases["escalate"], lang_code))
                     st.session_state.ai_action = "Escalated"
                     st.session_state.call_log.append({
                         "Time": datetime.now().strftime("%H:%M:%S"),
                         "Language": language,
-                        "Issue": st.session_state.issue_text[:50]+"...",
-                        "Sentiment": st.session_state.sentiment[0],
-                        "Risk": st.session_state.risk[0],
+                        "Issue": issue,
+                        "Sentiment": "Unknown",
+                        "SentimentConf": 0.0,
+                        "UnderstandingConf": 0,
+                        "Risk": "HIGH",
                         "Status": "Escalated"
                     })
                     st.session_state.stage = "done"
                     st.rerun()
                 else:
-                    st.session_state.stage = "confirm"
-                    st.session_state.confirm_audio_played = False
-                    st.rerun()
+                    if asr_conf == 0.0:
+                        asr_conf = 0.7
+                    sent_label, sent_color, sent_emoji, sent_conf, sent_scores = detect_sentiment(issue, language)
+                    dialect = detect_dialect(issue, language)
+                    formality = detect_formality(issue, language)
+                    risk_text, risk_color = risk_level(sent_label, issue)
+                    st.session_state.sentiment = (sent_label, sent_color, sent_emoji, sent_conf, sent_scores)
+                    st.session_state.dialect_info = dialect
+                    st.session_state.formality = formality
+                    st.session_state.risk = (risk_text, risk_color)
+                    st.session_state.issue_text = issue
+                    st.session_state.asr_confidence = asr_conf
+                    st.session_state.understanding_confidence = round((0.6 * asr_conf + 0.4 * sent_conf) * 100)
+                    st.markdown(f"**📝 Transcribed:** {issue}")
+                    st.markdown(f"**Sentiment:** {sent_emoji} <span style='color:{sent_color}'>{sent_label}</span>", unsafe_allow_html=True)
+                    if dialect:
+                        st.info(dialect)
+                    st.caption(f"🗣️ Tone: {formality}")
+
+                    if st.session_state.feedback_log and not st.session_state.feedback_log[-1]['verified'] and not st.session_state.feedback_log[-1]['corrected']:
+                        st.session_state.feedback_log[-1]['corrected'] = issue
+
+                    if risk_text == "HIGH" or st.session_state.understanding_confidence < 40:
+                        reason = "High risk" if risk_text == "HIGH" else "Low understanding confidence"
+                        st.session_state.escalation_reason = reason
+                        st.error(f"🔄 {reason}. Escalating to human agent immediately.")
+                        autoplay_audio(speak(current_phrases["escalate"], lang_code))
+                        st.session_state.ai_action = "Escalated"
+                        st.session_state.call_log.append({
+                            "Time": datetime.now().strftime("%H:%M:%S"),
+                            "Language": language,
+                            "Issue": st.session_state.issue_text[:50]+"...",
+                            "Sentiment": st.session_state.sentiment[0],
+                            "SentimentConf": st.session_state.sentiment[3],
+                            "UnderstandingConf": st.session_state.understanding_confidence,
+                            "Risk": st.session_state.risk[0],
+                            "Status": "Escalated"
+                        })
+                        st.session_state.stage = "done"
+                        st.rerun()
+                    else:
+                        st.session_state.stage = "confirm"
+                        st.session_state.confirm_audio_played = False
+                        st.rerun()
     else:
         if st.session_state.issue_text:
             st.write(f"**📝 Demo Issue:** {st.session_state.issue_text}")
@@ -573,7 +621,7 @@ elif st.session_state.stage == "issue":
 
 elif st.session_state.stage == "confirm":
     if not st.session_state.confirm_audio_played:
-        confirm_phrase = phrases[language]["confirm"](st.session_state.issue_text)
+        confirm_phrase = current_phrases["confirm"](st.session_state.issue_text)
         autoplay_audio(speak(confirm_phrase, lang_code))
         st.session_state.confirm_audio_played = True
         if demo_on:
@@ -582,12 +630,14 @@ elif st.session_state.stage == "confirm":
             answer = "yes"
             if answer.lower() in ["yes","ಹೌದು","हाँ"]:
                 st.success("✅ Confirmed. Help dispatched.")
-                autoplay_audio(speak(phrases[language]["help_dispatched"], lang_code))
+                autoplay_audio(speak(current_phrases["help_dispatched"], lang_code))
                 st.session_state.call_log.append({
                     "Time": datetime.now().strftime("%H:%M:%S"),
                     "Language": language,
                     "Issue": st.session_state.issue_text[:50]+"...",
                     "Sentiment": st.session_state.sentiment[0],
+                    "SentimentConf": st.session_state.sentiment[3],
+                    "UnderstandingConf": st.session_state.understanding_confidence,
                     "Risk": st.session_state.risk[0],
                     "Status": "Dispatched"
                 })
@@ -602,12 +652,14 @@ elif st.session_state.stage == "confirm":
                 st.rerun()
             else:
                 st.error("Escalating to human agent (demo).")
-                autoplay_audio(speak(phrases[language]["escalate"], lang_code))
+                autoplay_audio(speak(current_phrases["escalate"], lang_code))
                 st.session_state.call_log.append({
                     "Time": datetime.now().strftime("%H:%M:%S"),
                     "Language": language,
                     "Issue": st.session_state.issue_text[:50]+"...",
                     "Sentiment": st.session_state.sentiment[0],
+                    "SentimentConf": st.session_state.sentiment[3],
+                    "UnderstandingConf": st.session_state.understanding_confidence,
                     "Risk": st.session_state.risk[0],
                     "Status": "Escalated"
                 })
@@ -622,7 +674,7 @@ elif st.session_state.stage == "confirm":
                 st.rerun()
 
     if not demo_on:
-        st.markdown(f"#### 🤖 AI verifies: *{phrases[language]['confirm'](st.session_state.issue_text)}*")
+        st.markdown(f"#### 🤖 AI verifies: *{current_phrases['confirm'](st.session_state.issue_text)}*")
         st.write("🗣️ Answer **yes** or **no** after the question.")
         confirm_audio = st.audio_input("Record your yes/no", key="confirm_rec")
         if confirm_audio is not None:
@@ -633,7 +685,7 @@ elif st.session_state.stage == "confirm":
 
                 answer = ""
                 if not _google_speech_available:
-                    ans_text, _ = transcribe_with_whisper("confirm.wav", lang_code[language])
+                    ans_text, _, _ = transcribe_with_whisper("confirm.wav", lang_code)
                     if ans_text:
                         answer = ans_text
                 else:
@@ -658,13 +710,15 @@ elif st.session_state.stage == "confirm":
 
                 if is_yes:
                     st.success("✅ Confirmed. Help dispatched.")
-                    autoplay_audio(speak(phrases[language]["help_dispatched"], lang_code))
+                    autoplay_audio(speak(current_phrases["help_dispatched"], lang_code))
                     st.session_state.ai_action = "Dispatched"
                     st.session_state.call_log.append({
                         "Time": datetime.now().strftime("%H:%M:%S"),
                         "Language": language,
                         "Issue": st.session_state.issue_text[:50]+"...",
                         "Sentiment": st.session_state.sentiment[0],
+                        "SentimentConf": st.session_state.sentiment[3],
+                        "UnderstandingConf": st.session_state.understanding_confidence,
                         "Risk": st.session_state.risk[0],
                         "Status": "Dispatched"
                     })
@@ -691,18 +745,20 @@ elif st.session_state.stage == "confirm":
                         st.session_state.stage = "issue"
                         st.session_state.greeting_audio_played = True
                         st.session_state.understanding_confidence = max(0, st.session_state.understanding_confidence - 30)
-                        st.audio(speak(phrases[language]["retry"], lang_code), autoplay=True)
+                        st.audio(speak(current_phrases["retry"], lang_code), autoplay=True)
                         st.rerun()
                     else:
                         st.session_state.escalation_reason = "Repeated citizen denial"
                         st.error("🔄 Escalating to human agent.")
-                        autoplay_audio(speak(phrases[language]["escalate"], lang_code))
+                        autoplay_audio(speak(current_phrases["escalate"], lang_code))
                         st.session_state.ai_action = "Escalated"
                         st.session_state.call_log.append({
                             "Time": datetime.now().strftime("%H:%M:%S"),
                             "Language": language,
                             "Issue": st.session_state.issue_text[:50]+"...",
                             "Sentiment": st.session_state.sentiment[0],
+                            "SentimentConf": st.session_state.sentiment[3],
+                            "UnderstandingConf": st.session_state.understanding_confidence,
                             "Risk": st.session_state.risk[0],
                             "Status": "Escalated"
                         })
@@ -711,7 +767,7 @@ elif st.session_state.stage == "confirm":
                         st.rerun()
                 else:
                     st.warning("Could not understand answer. Escalating.")
-                    autoplay_audio(speak(phrases[language]["escalate"], lang_code))
+                    autoplay_audio(speak(current_phrases["escalate"], lang_code))
                     st.session_state.ai_action = "Escalated"
                     st.session_state.escalation_reason = "Unclear verification response"
                     st.session_state.call_log.append({
@@ -719,6 +775,8 @@ elif st.session_state.stage == "confirm":
                         "Language": language,
                         "Issue": st.session_state.issue_text[:50]+"...",
                         "Sentiment": st.session_state.sentiment[0],
+                        "SentimentConf": st.session_state.sentiment[3],
+                        "UnderstandingConf": st.session_state.understanding_confidence,
                         "Risk": st.session_state.risk[0],
                         "Status": "Escalated"
                     })
