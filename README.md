@@ -15,7 +15,7 @@ SamaajhVaani is an AI-assisted voice-to-voice system that ensures **verified und
 3. Run: `streamlit run app.py`
 
 ## Live demo
-[Deployed app URL – to be added after deployment]
+[Deployed app URL – https://samaajhvaani-5zdggnxs4dq6p5bc82zgub.streamlit.app/]
 
 ## Video walkthrough
-[Link to video – to be added after recording]
+[Link to video –https://www.youtube.com/watch?v=RPPAfLQIrWw]
