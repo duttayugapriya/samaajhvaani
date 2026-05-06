@@ -1,7 +1,5 @@
 # SamaajhVaani – AI for 1092 Helpline
 
-A prototype built by Yugapriya Dutta for Theme 12 (AI for 1092 Helpline).
-
 ## Overview
 SamaajhVaani is an AI-assisted voice-to-voice system that ensures **verified understanding before action** on the 1092 helpline. It:
 - Supports Kannada, Hindi, and English voice interaction
